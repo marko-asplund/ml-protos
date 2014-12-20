@@ -9,82 +9,90 @@ implementation of the A-Priori algorithm.
 @author markoa
 
 TODO
-- clean up
-  + simplification, readability
-  + esp. getTriangularMatrixSize
-  + getPairsIndex currying?
-- generalize iterating over input data across all passes
+- use streams with pairCounts?
+- implement counting for set size 3
 - implement counting for set size k
 - test with large data sets
  */
-object APriori {
+class APriori(inputFileName: String, support: Int, skip: Int, recordSeparator: String) {
+
   class FrequentItems(val counts: IndexedSeq[Int], val itemMapping: Map[String, Int]) {
     def +(item: String, count: Int = 1) = if(itemMapping.contains(item))
-      FrequentItems(counts.updated(itemMapping(item), counts(itemMapping(item)) + count), itemMapping)
+      new FrequentItems(counts.updated(itemMapping(item), counts(itemMapping(item)) + count), itemMapping)
     else
-      FrequentItems(counts :+ count, itemMapping.updated(item, counts.size))
+      new FrequentItems(counts :+ count, itemMapping.updated(item, counts.size))
+    def count(item: String) = counts(itemMapping(item))
+    def size() = itemMapping.size
+    def contains(item: String) = itemMapping.contains(item)
+    def index(item: String) = itemMapping(item)
+    def itemCounts = itemMapping.toStream.map( p => (p._1, counts(p._2)) )
+    def countFrequentPairs = APriori.this.countFrequentPairs(pairs = FrequentPairs(this))
   }
 
   object FrequentItems {
     val Initial = new FrequentItems(Vector(-1), Map())
-    def apply(counts: IndexedSeq[Int], itemMapping: Map[String, Int]) = new FrequentItems(counts, itemMapping)
   }
 
-  @tailrec def createFrequentItemsTable(lines: Iterator[String], support: Int, items: FrequentItems = FrequentItems.Initial): FrequentItems = {
+  class FrequentPairs(val frequentItems: FrequentItems, val counts: IndexedSeq[Int]) {
+    def +(p: (Int, Int)) = {
+      val k = getPairsIndex(p._1, p._2, frequentItems.size)
+      new FrequentPairs(frequentItems, counts.updated(k, counts(k) + 1))
+    }
+    def getPairsIndex(i: Int, j: Int, n: Int) = ((i-1) * (n-i/2.0)).toInt + j - i
+    def pairCounts = {
+      val idxToName = for((k, v) <- frequentItems.itemMapping) yield (v, k)
+      (for(i <- 1 to (frequentItems.size-1);
+           j <- 1 to frequentItems.size if(i < j);
+           k = getPairsIndex(i, j, frequentItems.size) if(counts(k) > support))
+      yield (idxToName(i), idxToName(j)) -> counts(k)).toMap
+    }
+  }
+
+  object FrequentPairs {
+    def apply(items: FrequentItems) =
+      new FrequentPairs(items, new Array[Int](getTriangularMatrixSize(items.itemMapping.size)))
+    def getTriangularMatrixSize(n: Int) = ((n-1) * n/2.0).toInt + 1
+  }
+
+  def getLines() = Source.fromFile(inputFileName).getLines().drop(skip)
+
+  @tailrec final def countFrequentItems(lines: Iterator[String] = getLines(), items: FrequentItems = FrequentItems.Initial): FrequentItems = {
     if(!lines.hasNext) {
       items.itemMapping.foldLeft(FrequentItems.Initial) {
         case (itemsAcc, (item, idx)) if (items.counts(idx) > support) => itemsAcc + (item, items.counts(idx))
         case (itemsAcc, _) => itemsAcc
       }
     } else {
-      createFrequentItemsTable(lines, support, lines.next().split(' ').foldLeft(items)( (itemsAcc, item) => itemsAcc + item ))
+      countFrequentItems(lines, lines.next().split(' ').foldLeft(items)( (itemsAcc, item) => itemsAcc + item ))
     }
   }
 
-  @tailrec def countFrequentPairs(lines: Iterator[String], frequentItems: FrequentItems, counts: IndexedSeq[Int]): IndexedSeq[Int] = {
+  @tailrec final def countFrequentPairs(lines: Iterator[String] = getLines(), pairs: FrequentPairs): FrequentPairs = {
     if (!lines.hasNext)
-      counts
+      pairs
     else {
       // iterate items in basket; filter out non-frequent items; generate pairs, order items in pair
-      countFrequentPairs(lines, frequentItems, lines.next().split(' ').collect {
-        case x if(frequentItems.itemMapping.contains(x)) => frequentItems.itemMapping(x) }.
+      countFrequentPairs(lines, lines.next().split(' ').collect {
+        case x if(pairs.frequentItems.contains(x)) => pairs.frequentItems.index(x) }.
         toSet.subsets(2).map( s => s.toIndexedSeq match {
         case Seq(a, b) => if(a < b) (a, b) else (b, a)
-      }).foldLeft(counts) { (countsAcc, p) =>
-        val k = getPairsIndex(p._1, p._2, frequentItems.itemMapping.size)
-        countsAcc.updated(k, counts(k) + 1)
+      }).foldLeft(pairs) { (countsAcc, p) =>
+        countsAcc + p
       })
     }
   }
 
-  def getPairsIndex(i: Int, j: Int, n: Int) = ((i-1) * (n-i/2.0)).toInt + j - i
+}
 
-  def getTriangularMatrixSize(n: Int) = ((n-1) * n/2.0).toInt + 1
-
-  def getFrequentPairCounts(support: Int, n: Int, items: FrequentItems, counts: IndexedSeq[Int]) = {
-    val idxToName = for((k, v) <- items.itemMapping) yield (v, k)
-    (for(i <- 1 to (n-1);
-      j <- 1 to n if(i < j);
-      k = getPairsIndex(i, j, n) if(counts(k) > support))
-      yield (idxToName(i), idxToName(j)) -> counts(k)).toMap
-  }
-
-  def countFrequentPairs(fileName: String, support: Int): (FrequentItems, IndexedSeq[Int]) = {
-    val lines = Source.fromFile(fileName).getLines()
-    lines.next()
-    val items = createFrequentItemsTable(lines, support)
-
-    val lines2 = Source.fromFile(fileName).getLines()
-    lines2.next()
-    val pairCounts = countFrequentPairs(lines2, items, new Array[Int](getTriangularMatrixSize(items.itemMapping.size)))
-    (items, pairCounts)
+object APriori {
+  def apply(inputFileName: String, support: Int) = {
+    new APriori(inputFileName, support, 1, " ")
   }
 
   def main(args: Array[String]): Unit = {
     println(args.toList)
 
-    val r = countFrequentPairs(args(0), 2)
-    getFrequentPairCounts(2, (r._1.itemMapping.size-1)/2, r._1, r._2)
+    val a = APriori(args(0), 2).countFrequentItems().countFrequentPairs
   }
 
 }
